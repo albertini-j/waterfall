@@ -41,28 +41,7 @@ atividades = [
 ]
 
 projeto.add_activities(atividades)
-projeto.update_schedule(plot=True, plot_resources=True)
-
-for atividade in atividades:
-    print(
-        atividade.activity_id,
-        "ES=", atividade.early_start,
-        "LS=", atividade.late_start,
-        "float=", atividade.total_float,
-        "critica=", atividade.is_critical,
-    )
+projeto.update_schedule(plot=True)
 ```
 
-O método `update_schedule` calcula as datas de início e fim com base nas dependências, a folga (diferença entre late e early start)
-e marca `is_critical` quando a folga é zero. Também pode devolver um gráfico de Gantt quando `plot=True`.
-
-### Histograma de recursos
-
-Ao rodar `update_schedule`, o cronograma também calcula um histograma diário somando os recursos alocados.
-Para visualizar:
-
-```python
-fig, ax = projeto.plot_resource_histogram()
-```
-
-O método `plot_resource_histogram` plota barras empilhadas por data para os três recursos cadastrados.
+O método `update_schedule` calcula as datas de início e fim com base nas dependências e pode devolver um gráfico de Gantt quando `plot=True`.
