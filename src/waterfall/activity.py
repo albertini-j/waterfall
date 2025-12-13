@@ -31,12 +31,6 @@ class Activity:
         Data de início calculada após o planejamento.
     finish:
         Data de término calculada após o planejamento.
-    early_start / late_start:
-        Datas de início mais cedo e mais tarde considerando as dependências.
-    total_float:
-        Folga total (late_start - early_start) em dias.
-    is_critical:
-        Indica se a atividade está no caminho crítico (folga zero).
     """
 
     name: str
@@ -51,16 +45,11 @@ class Activity:
     predecessors: List[str] = field(default_factory=list)
     start: Optional[datetime] = None
     finish: Optional[datetime] = None
-    early_start: Optional[datetime] = None
-    late_start: Optional[datetime] = None
-    total_float: Optional[float] = None
-    is_critical: bool = False
 
     def set_schedule(self, start: datetime) -> None:
         """Ajusta datas de início e fim com base na duração configurada."""
 
         self.start = start
-        self.early_start = start
         self.finish = start + timedelta(days=self.duration)
 
     def depends_on(self, candidates: Iterable[str]) -> bool:
@@ -74,7 +63,3 @@ class Activity:
 
         self.start = None
         self.finish = None
-        self.early_start = None
-        self.late_start = None
-        self.total_float = None
-        self.is_critical = False
