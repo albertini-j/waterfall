@@ -1,0 +1,14 @@
+[project]
+name = "waterfall"
+version = "0.1.0"
+description = "Biblioteca simples para planejamento de projetos waterfall com gráficos de Gantt"
+authors = [{ name = "Equipe Waterfall" }]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.7",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
