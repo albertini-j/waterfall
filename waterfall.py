@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence
 import warnings
 
@@ -42,7 +42,10 @@ class Activity:
     duration:
         Duração em dias (aceita valores fracionários).
     resource1, resource2, resource3:
-        Esforço ou carga associada a cada recurso.
+        Cargas padrão (legado). Se você quiser nomes e quantidades customizadas,
+        use o dicionário ``resources`` ao criar a atividade.
+    resources:
+        Dicionário opcional ``{nome_recurso: carga}`` para atribuição explícita.
     delay:
         Atraso aplicado ao início da atividade (em dias). Não bloqueia o
         planejamento, mas pode reduzir a folga.
@@ -66,9 +69,10 @@ class Activity:
     short_description: str
     long_description: str
     duration: float
-    resource1: float
-    resource2: float
-    resource3: float
+    resource1: float = 0.0
+    resource2: float = 0.0
+    resource3: float = 0.0
+    resources: Optional[Dict[str, float]] = None
     delay: float = 0.0
     predecessors: List[str] = field(default_factory=list)
     start: Optional[datetime] = None
@@ -77,6 +81,18 @@ class Activity:
     late_start: Optional[datetime] = None
     total_float: Optional[float] = None
     is_critical: bool = False
+
+    def __post_init__(self) -> None:
+        # Permite uso legado (resource1..3) e customizado (dict "resources").
+        if self.resources is None:
+            self.resources = {
+                "resource1": self.resource1,
+                "resource2": self.resource2,
+                "resource3": self.resource3,
+            }
+        else:
+            # Cria uma cópia para evitar mutação externa.
+            self.resources = dict(self.resources)
 
     def set_schedule(self, start: datetime) -> None:
         """Ajusta datas de início e fim com base na duração configurada."""
@@ -121,12 +137,24 @@ class UnknownPredecessorError(ScheduleError):
 class ProjectSchedule:
     """Mantém a lista de atividades e calcula datas de início e fim."""
 
-    def __init__(self, start_date: Optional[datetime] = None) -> None:
+    def __init__(
+        self,
+        start_date: Optional[datetime] = None,
+        *,
+        resource_count: int = 3,
+        resource_names: Optional[Sequence[str]] = None,
+    ) -> None:
         self.start_date: datetime = start_date or datetime.now().replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         self.activities: Dict[str, Activity] = {}
-        self.resource_histogram: List[tuple[datetime, float, float, float, float]] = []
+        if resource_names is not None:
+            self.resource_names: List[str] = list(resource_names)
+        else:
+            if resource_count < 1:
+                raise ValueError("resource_count deve ser pelo menos 1")
+            self.resource_names = [f"resource{i+1}" for i in range(resource_count)]
+        self.resource_histogram: List[Dict[str, object]] = []
 
     def add_activity(self, activity: Activity) -> None:
         if activity.activity_id in self.activities:
@@ -276,15 +304,23 @@ class ProjectSchedule:
         plt.tight_layout()
         return fig, ax
 
-    def _build_resource_histogram(self) -> List[tuple[datetime, float, float, float, float]]:
+    def _build_resource_histogram(self) -> List[Dict[str, object]]:
         if not self.activities:
             return []
 
-        usage: Dict[datetime, List[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+        usage: Dict[datetime, Dict[str, float]] = defaultdict(
+            lambda: {name: 0.0 for name in self.resource_names}
+        )
 
         for activity in self.activities.values():
             if activity.start is None or activity.finish is None:
                 raise ScheduleError("Atualize o cronograma antes de gerar o histograma de recursos.")
+
+            unknown = set(activity.resources or {}).difference(self.resource_names)
+            if unknown:
+                raise ScheduleError(
+                    f"Atividade {activity.activity_id} possui recursos não configurados: {', '.join(sorted(unknown))}."
+                )
 
             current = activity.start
             while current < activity.finish:
@@ -293,44 +329,122 @@ class ProjectSchedule:
                 portion_days = (slice_finish - current).total_seconds() / 86400
 
                 day_key = datetime.combine(current.date(), time.min)
-                usage[day_key][0] += activity.resource1 * portion_days
-                usage[day_key][1] += activity.resource2 * portion_days
-                usage[day_key][2] += activity.resource3 * portion_days
+                for name in self.resource_names:
+                    usage[day_key][name] += (activity.resources or {}).get(name, 0.0) * portion_days
 
                 current = slice_finish
 
-        histogram: List[tuple[datetime, float, float, float, float]] = []
+        histogram: List[Dict[str, object]] = []
         for day in sorted(usage.keys()):
-            r1, r2, r3 = usage[day]
-            histogram.append((day, r1, r2, r3, r1 + r2 + r3))
+            per_resource = usage[day]
+            histogram.append({
+                "date": day,
+                "resources": per_resource,
+                "total": sum(per_resource.values()),
+            })
 
         return histogram
 
-    def plot_resource_histogram(self, *, title: str = "Histograma de Recursos"):
+    def plot_resource_histogram(
+        self,
+        *,
+        title: str = "Histograma de Recursos",
+        resources: Optional[Sequence[str]] = None,
+    ):
+        """
+        Gera um histograma por recurso configurado.
+
+        Como usar:
+        - Após chamar ``update_schedule``, invoque ``plot_resource_histogram()``
+          para produzir um gráfico separado para cada recurso configurado.
+        - Use ``resources=["pedreiros", "eletricistas"]`` para filtrar e
+          renderizar apenas alguns recursos. Quando ``resources`` é ``None``,
+          todos os recursos definidos em ``ProjectSchedule.resource_names`` são
+          exibidos.
+        - Cada subplot mostra barras da carga diária do recurso respectivo.
+        """
+
         if not self.resource_histogram:
             raise ScheduleError("Nenhum histograma disponível. Rode update_schedule primeiro.")
 
-        dates = [slot[0] for slot in self.resource_histogram]
-        r1 = [slot[1] for slot in self.resource_histogram]
-        r2 = [slot[2] for slot in self.resource_histogram]
-        r3 = [slot[3] for slot in self.resource_histogram]
+        selected = list(resources) if resources is not None else list(self.resource_names)
+        unknown = set(selected).difference(self.resource_names)
+        if unknown:
+            raise ScheduleError(
+                f"Recursos não configurados para plotagem: {', '.join(sorted(unknown))}."
+            )
 
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.bar(dates, r1, label="Recurso 1")
-        ax.bar(dates, r2, bottom=r1, label="Recurso 2")
-        bottom_r3 = [v1 + v2 for v1, v2 in zip(r1, r2)]
-        ax.bar(dates, r3, bottom=bottom_r3, label="Recurso 3")
+        dates = [slot["date"] for slot in self.resource_histogram]
 
-        ax.set_title(title)
-        ax.set_ylabel("Carga")
-        ax.set_xlabel("Data")
-        ax.legend()
+        fig, axes = plt.subplots(
+            nrows=len(selected),
+            ncols=1,
+            sharex=True,
+            figsize=(10, max(3, 2 * len(selected))),
+        )
+        if len(selected) == 1:
+            axes = [axes]
+
+        for ax, resource_name in zip(axes, selected):
+            values = [slot["resources"].get(resource_name, 0.0) for slot in self.resource_histogram]
+            ax.bar(dates, values, label=resource_name)
+            ax.set_ylabel("Carga")
+            ax.legend()
+
+        axes[0].set_title(title)
+        axes[-1].set_xlabel("Data")
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
-        return fig, ax
+        return fig, axes
 
     def get_activity(self, activity_id: str) -> Activity:
         return self.activities[activity_id]
+
+    def find_by_activity_id(self, activity_id: str) -> Activity:
+        """Alias explícito para recuperar uma atividade pelo ID."""
+
+        return self.get_activity(activity_id)
+
+    def find_by_name(self, name: str) -> List[Activity]:
+        """Lista atividades com nome exatamente igual (case-insensitive)."""
+
+        return [a for a in self.activities.values() if a.name.lower() == name.lower()]
+
+    def find_by_area(self, area: str) -> List[Activity]:
+        """Retorna todas as atividades de uma determinada área (case-insensitive)."""
+
+        return [a for a in self.activities.values() if a.area.lower() == area.lower()]
+
+    def activities_on_date(self, target_date: date) -> List[Activity]:
+        """Retorna atividades que ocorrem (mesmo parcialmente) no dia informado."""
+
+        if any(a.start is None or a.finish is None for a in self.activities.values()):
+            raise ScheduleError("Atualize o cronograma antes de consultar por datas.")
+
+        day_start = datetime.combine(target_date, time.min)
+        day_end = day_start + timedelta(days=1)
+        return [
+            a
+            for a in self.activities.values()
+            if a.start < day_end and a.finish > day_start  # type: ignore[operator]
+        ]
+
+    def activities_in_period(self, start: date, end: date) -> List[Activity]:
+        """Retorna atividades que intersectam o período [start, end]."""
+
+        if end < start:
+            raise ValueError("O fim do período deve ser igual ou posterior ao início.")
+
+        if any(a.start is None or a.finish is None for a in self.activities.values()):
+            raise ScheduleError("Atualize o cronograma antes de consultar por datas.")
+
+        start_dt = datetime.combine(start, time.min)
+        end_dt = datetime.combine(end, time.min) + timedelta(days=1)
+        return [
+            a
+            for a in self.activities.values()
+            if a.start < end_dt and a.finish > start_dt  # type: ignore[operator]
+        ]
 
     def reset(self) -> None:
         for activity in self.activities.values():
