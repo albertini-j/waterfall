@@ -3,7 +3,8 @@
 Esta biblioteca fornece classes para planejar projetos no modelo waterfall. As principais entidades são:
 
 - `Activity`: descreve uma atividade com informações de duração, recursos e dependências.
-- `ProjectSchedule`: mantém a lista de atividades, calcula datas de início e fim a partir das precedências e produz gráficos de Gantt.
+- `ProjectSchedule`: mantém a lista de atividades, calcula datas de início e fim a partir das precedências, deriva early/late start,
+  folga e caminho crítico, além de produzir gráficos de Gantt e histogramas de recursos.
 
 ## Uso básico
 

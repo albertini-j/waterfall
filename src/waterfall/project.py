@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import matplotlib.pyplot as plt
@@ -31,6 +31,7 @@ class ProjectSchedule:
     def __init__(self, start_date: Optional[datetime] = None) -> None:
         self.start_date: datetime = start_date or datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         self.activities: Dict[str, Activity] = {}
+        self.resource_histogram: List[tuple[datetime, float, float, float, float]] = []
 
     def add_activity(self, activity: Activity) -> None:
         if activity.activity_id in self.activities:
@@ -77,11 +78,23 @@ class ProjectSchedule:
 
         return order
 
-    def update_schedule(self, plot: bool = False, title: str = "Cronograma"):
-        """Calcula datas de início e fim e opcionalmente plota o gráfico de Gantt."""
+    def update_schedule(
+        self,
+        plot: bool = False,
+        title: str = "Cronograma",
+        *,
+        plot_resources: bool = False,
+        resource_title: str = "Histograma de Recursos",
+    ):
+        """Calcula datas de início/fim e opcionalmente plota gráficos de Gantt e recursos."""
 
         self._validate_dependencies()
         order = self._topological_order()
+
+        successors: Dict[str, List[str]] = defaultdict(list)
+        for activity in self.activities.values():
+            for predecessor in activity.predecessors:
+                successors[predecessor].append(activity.activity_id)
 
         for activity in self.activities.values():
             activity.clear_schedule()
@@ -96,8 +109,39 @@ class ProjectSchedule:
 
             activity.set_schedule(start)
 
+        project_finish = max(activity.finish for activity in self.activities.values()) if self.activities else self.start_date
+
+        for activity_id in reversed(order):
+            activity = self.activities[activity_id]
+
+            if successors.get(activity_id):
+                successor_starts = [self.activities[suc].late_start for suc in successors[activity_id] if self.activities[suc].late_start is not None]
+                late_finish = min(successor_starts) if successor_starts else project_finish
+            else:
+                late_finish = project_finish
+
+            activity.late_start = late_finish - timedelta(days=activity.duration)
+            if activity.early_start is None:
+                raise ScheduleError("early_start não calculado para a atividade.")
+
+            total_float = (activity.late_start - activity.early_start).total_seconds() / 86400
+            activity.total_float = total_float
+            activity.is_critical = abs(total_float) < 1e-9
+
+        self.resource_histogram = self._build_resource_histogram()
+
         if plot:
-            return self.plot_gantt(title=title)
+            gantt = self.plot_gantt(title=title)
+        else:
+            gantt = None
+
+        if plot_resources:
+            histogram = self.plot_resource_histogram(title=resource_title)
+        else:
+            histogram = None
+
+        if plot or plot_resources:
+            return gantt if histogram is None else (gantt, histogram)
 
     def plot_gantt(self, *, title: str = "Cronograma"):
         if not self.activities:
@@ -124,6 +168,59 @@ class ProjectSchedule:
         ax.set_yticklabels(ylabels)
         ax.set_xlabel("Data")
         ax.set_title(title)
+        plt.tight_layout()
+        return fig, ax
+
+    def _build_resource_histogram(self) -> List[tuple[datetime, float, float, float, float]]:
+        if not self.activities:
+            return []
+
+        usage: Dict[datetime, List[float]] = defaultdict(lambda: [0.0, 0.0, 0.0])
+
+        for activity in self.activities.values():
+            if activity.start is None or activity.finish is None:
+                raise ScheduleError("Atualize o cronograma antes de gerar o histograma de recursos.")
+
+            current = activity.start
+            while current < activity.finish:
+                end_of_day = datetime.combine(current.date(), time.min) + timedelta(days=1)
+                slice_finish = min(end_of_day, activity.finish)
+                portion_days = (slice_finish - current).total_seconds() / 86400
+
+                day_key = datetime.combine(current.date(), time.min)
+                usage[day_key][0] += activity.resource1 * portion_days
+                usage[day_key][1] += activity.resource2 * portion_days
+                usage[day_key][2] += activity.resource3 * portion_days
+
+                current = slice_finish
+
+        histogram: List[tuple[datetime, float, float, float, float]] = []
+        for day in sorted(usage.keys()):
+            r1, r2, r3 = usage[day]
+            histogram.append((day, r1, r2, r3, r1 + r2 + r3))
+
+        return histogram
+
+    def plot_resource_histogram(self, *, title: str = "Histograma de Recursos"):
+        if not self.resource_histogram:
+            raise ScheduleError("Nenhum histograma disponível. Rode update_schedule primeiro.")
+
+        dates = [slot[0] for slot in self.resource_histogram]
+        r1 = [slot[1] for slot in self.resource_histogram]
+        r2 = [slot[2] for slot in self.resource_histogram]
+        r3 = [slot[3] for slot in self.resource_histogram]
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.bar(dates, r1, label="Recurso 1")
+        ax.bar(dates, r2, bottom=r1, label="Recurso 2")
+        bottom_r3 = [v1 + v2 for v1, v2 in zip(r1, r2)]
+        ax.bar(dates, r3, bottom=bottom_r3, label="Recurso 3")
+
+        ax.set_title(title)
+        ax.set_ylabel("Carga")
+        ax.set_xlabel("Data")
+        ax.legend()
+        plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
         return fig, ax
 
