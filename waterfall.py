@@ -271,7 +271,9 @@ class ProjectSchedule:
         if any(activity.start is None or activity.finish is None for activity in self.activities.values()):
             raise ScheduleError("Run update_schedule before plotting the chart.")
 
-        sorted_items: Sequence[Activity] = sorted(self.activities.values(), key=lambda a: a.start or self.start_date)
+        sorted_items: Sequence[Activity] = sorted(
+            self.activities.values(), key=lambda a: a.start or self.start_date
+        )
 
         fig, ax = plt.subplots(figsize=(10, max(4, len(sorted_items) * 0.6)))
         yticks: List[int] = []
@@ -280,13 +282,17 @@ class ProjectSchedule:
         for index, activity in enumerate(sorted_items):
             start = activity.start or self.start_date
             duration: timedelta = (activity.finish or start) - start
-            ax.barh(index, duration.days + duration.seconds / 86400, left=start, align="center")
-            ax.text(start, index, activity.name, va="center", ha="right")
+            width_days: float = duration.days + duration.seconds / 86400
+            ax.barh(index, width_days, left=start, align="center")
+
+            midpoint = start + timedelta(days=width_days / 2)
+            ax.text(midpoint, index, activity.name, va="center", ha="center")
             yticks.append(index)
             ylabels.append(f"{activity.activity_id} ({activity.area})")
 
         ax.set_yticks(yticks)
         ax.set_yticklabels(ylabels)
+        ax.invert_yaxis()
         ax.set_xlabel("Date")
         ax.set_title(title)
         plt.tight_layout()
