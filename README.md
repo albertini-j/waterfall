@@ -1,10 +1,10 @@
 # Waterfall scheduling helper
 
-This repository ships a **single module file (`waterfall.py`)**. Copy it into your project folder and import it directly (`import waterfall as wf`) without installing a package. The only external dependency is `matplotlib` (install manually with `pip install matplotlib` or `uv pip install matplotlib`).
+This repository ships a **single module file (`waterfall.py`)**. Copy it into your project folder and import it directly (`import waterfall as wf`) without installing a package. External dependencies: `matplotlib` (for plotting) and `pydantic` (for typed validation). Install them manually with `pip install matplotlib pydantic` or `uv pip install matplotlib pydantic`.
 
 Main entities:
 - `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, and optional delay.
-- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts plus per-resource histograms.
+- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts plus per-resource histograms. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
 
 ## Basic usage
 ```python
@@ -72,6 +72,7 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - `find_by_name("Solution design")`, `find_by_activity_id("A1")`, `find_by_area("Architecture")`
 - `activities_on_date(date(2025, 1, 8))` returns activities touching that day.
 - `activities_in_period(date(2025, 1, 6), date(2025, 1, 10))` returns activities intersecting the interval.
+- `activities_as_list()` returns a deterministic list of activities (sorted by ID) so you can serialize or rebuild a schedule elsewhere with `add_activities`.
 
 ## Full example (5 activities using every function)
 The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, and query helpers.

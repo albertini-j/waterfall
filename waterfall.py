@@ -6,7 +6,6 @@ This module is self-contained: drop the file into your project folder to
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import warnings
@@ -14,6 +13,7 @@ import warnings
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
     "Activity",
@@ -25,8 +25,7 @@ __all__ = [
 ]
 
 
-@dataclass
-class Activity:
+class Activity(BaseModel):
     """Represents a task in the waterfall schedule.
 
     Use this class to describe each project task, specifying duration,
@@ -36,15 +35,17 @@ class Activity:
     blocking scheduling.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     name: str
     activity_id: str
     area: str
     short_description: str
     long_description: str
     duration: float
-    resources: Dict[str, float] = field(default_factory=dict)
+    resources: Dict[str, float] = Field(default_factory=dict)
     delay: float = 0.0
-    predecessors: List[str] = field(default_factory=list)
+    predecessors: List[str] = Field(default_factory=list)
     start: Optional[datetime] = None
     finish: Optional[datetime] = None
     early_start: Optional[datetime] = None
@@ -52,10 +53,12 @@ class Activity:
     total_float: Optional[float] = None
     is_critical: bool = False
 
-    def __post_init__(self) -> None:
+    @model_validator(mode="after")
+    def clone_resources(self) -> "Activity":
         """Clone the resources dictionary to avoid external mutation."""
 
         self.resources = dict(self.resources)
+        return self
 
     def set_schedule(self, start: datetime) -> None:
         """Define start/finish and early start for internal scheduling."""
@@ -97,35 +100,39 @@ class UnknownPredecessorError(ScheduleError):
     """Raised when a declared predecessor is missing."""
 
 
-class ProjectSchedule:
+def _default_start_date() -> datetime:
+    """Generate a normalized midnight start date for defaults."""
+
+    return datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+class ProjectSchedule(BaseModel):
     """Stores activities, computes dates, and offers plotting/query helpers."""
 
-    def __init__(
-        self,
-        start_date: Optional[datetime] = None,
-        *,
-        resource_count: int = 3,
-        resource_names: Optional[Sequence[str]] = None,
-    ) -> None:
-        """Create an empty schedule.
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        Use ``resource_names`` to explicitly name each resource (for
-        example ``["civil_engineers", "electrical_engineers"]``) or
-        ``resource_count`` to auto-generate ``resourceN`` placeholders.
-        ``start_date`` defines the project anchor date for root tasks.
-        """
+    start_date: datetime = Field(default_factory=_default_start_date)
+    resource_count: int = 3
+    resource_names: List[str] = Field(default_factory=list)
+    activities: Dict[str, Activity] = Field(default_factory=dict)
+    resource_histogram: List[Dict[str, object]] = Field(default_factory=list)
 
-        self.start_date: datetime = start_date or datetime.now().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        self.activities: Dict[str, Activity] = {}
-        if resource_names is not None:
-            self.resource_names: List[str] = list(resource_names)
-        else:
-            if resource_count < 1:
+    @field_validator("start_date")
+    @classmethod
+    def normalize_start_date(cls, value: datetime) -> datetime:
+        """Force the start date to midnight for consistent calculations."""
+
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    @model_validator(mode="after")
+    def populate_resource_names(self) -> "ProjectSchedule":
+        """Populate resource names based on the provided count when absent."""
+
+        if not self.resource_names:
+            if self.resource_count < 1:
                 raise ValueError("resource_count must be at least 1")
-            self.resource_names = [f"resource{i+1}" for i in range(resource_count)]
-        self.resource_histogram: List[Dict[str, object]] = []
+            self.resource_names = [f"resource{i+1}" for i in range(self.resource_count)]
+        return self
 
     def add_activity(self, activity: Activity) -> None:
         """Add a single activity; fail when the ID already exists."""
@@ -139,6 +146,17 @@ class ProjectSchedule:
 
         for activity in activities:
             self.add_activity(activity)
+
+    def activities_as_list(self) -> List[Activity]:
+        """Return a stable list of activities for serialization or rebuilding.
+
+        Use this helper when you need to persist or transmit the schedule
+        state. The returned list is sorted by ``activity_id`` so you can feed
+        it back into ``add_activities`` on a fresh ``ProjectSchedule`` to
+        reconstruct the same plan.
+        """
+
+        return [self.activities[aid] for aid in sorted(self.activities)]
 
     def _validate_dependencies(self) -> None:
         """Ensure every predecessor refers to a known activity."""
@@ -279,7 +297,11 @@ class ProjectSchedule:
         yticks: List[int] = []
         ylabels: List[str] = []
 
-        for index, activity in enumerate(sorted_items):
+        # Draw from top to bottom explicitly so the earliest activities appear at the top
+        # of the chart without relying on axis inversion.
+        positions: List[int] = list(range(len(sorted_items) - 1, -1, -1))
+
+        for index, activity in zip(positions, sorted_items):
             start = activity.start or self.start_date
             duration: timedelta = (activity.finish or start) - start
             width_days: float = duration.days + duration.seconds / 86400
@@ -292,7 +314,6 @@ class ProjectSchedule:
 
         ax.set_yticks(yticks)
         ax.set_yticklabels(ylabels)
-        ax.invert_yaxis()
         ax.set_xlabel("Date")
         ax.set_title(title)
         plt.tight_layout()
