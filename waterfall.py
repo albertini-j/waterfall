@@ -796,18 +796,16 @@ def import_schedule_from_excel(
     excel_path: str | Path,
     config: ImportConfig,
     *,
-    start_date: Optional[datetime] = None,
     progress_as_of: Optional[datetime] = None,
-    workweek: Optional[Set[int]] = None,
-    holidays: Optional[Set[date]] = None,
-    extra_workdays: Optional[Set[date]] = None,
-) -> ProjectSchedule:
-    """Create a ``ProjectSchedule`` from an Excel file using a column mapping.
+) -> List[Activity]:
+    """Load activities from Excel using a column mapping and return them.
 
     The Excel sheet is read as values (formulas ignored) via ``pandas.read_excel``.
     ``ImportConfig`` describes which columns supply activity attributes. Use
     ``save_import_config`` and ``load_import_config`` to persist mappings for
-    future imports.
+    future imports. The returned list can be passed to
+    ``ProjectSchedule.add_activities`` and paired with a schedule-level
+    ``progress_as_of`` when desired.
     """
 
     try:
@@ -818,20 +816,12 @@ def import_schedule_from_excel(
     sheet = config.sheet_name or 0
     df = pd.read_excel(excel_path, sheet_name=sheet, engine="openpyxl")
 
-    schedule = ProjectSchedule(
-        start_date=start_date or _default_start_date(),
-        resource_names=list(config.resource_columns.keys()) or None,
-        progress_as_of=progress_as_of,
-        workweek=workweek or {0, 1, 2, 3, 4},
-        holidays=holidays or set(),
-        extra_workdays=extra_workdays or set(),
-    )
-
     def _get(row: Dict[str, object], column: Optional[str]) -> Optional[object]:
         if not column:
             return None
         return row.get(column)
 
+    activities: List[Activity] = []
     for _, row in df.iterrows():
         values = row.to_dict()
         activity_id = str(_get(values, config.activity_id_column) or "").strip()
@@ -885,7 +875,13 @@ def import_schedule_from_excel(
             resources=resources,
             predecessors=predecessors,
         )
+        activities.append(activity)
 
-        schedule.add_activity(activity)
+    # The caller can apply a schedule-level progress_as_of; warn if set but unused
+    if progress_as_of is not None:
+        warnings.warn(
+            "progress_as_of is a schedule-level attribute; apply it on ProjectSchedule after creating it.",
+            RuntimeWarning,
+        )
 
-    return schedule
+    return activities

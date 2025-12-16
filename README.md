@@ -121,15 +121,18 @@ config = wf.ImportConfig(
 # (optional) Save mapping for future imports
 wf.save_import_config(config, "ld_mapping.json")
 
-# 2) Import the schedule from the Excel file
-schedule = wf.import_schedule_from_excel(
-    "LD_R0.xlsx",
-    config,
+# 2) Import activities from the Excel file
+activities = wf.import_schedule_from_excel("LD_R0.xlsx", config)
+
+# 3) Build the schedule with calendar/progress context
+schedule = wf.ProjectSchedule(
     start_date=datetime(2025, 1, 6),
+    resource_names=list(config.resource_columns.keys()),
     progress_as_of=datetime(2025, 1, 8),
 )
+schedule.add_activities(activities)
 
-# 3) Calculate and plot
+# 4) Calculate and plot
 schedule.update_schedule(plot=True, plot_resources=True)
 schedule.plot_s_curve(title="Planned vs actual (LD)")
 ```
