@@ -3,8 +3,8 @@
 This repository ships a **single module file (`waterfall.py`)**. Copy it into your project folder and import it directly (`import waterfall as wf`) without installing a package. External dependencies: `matplotlib` (for plotting) and `pydantic` (for typed validation). Install them manually with `pip install matplotlib pydantic` or `uv pip install matplotlib pydantic`.
 
 Main entities:
-- `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, and optional delay.
-- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts plus per-resource histograms. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
+- `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, optional delay, **weight**, and **progress tracking** fields (`progress_percent`, `progress_as_of`, `actual_finish`).
+- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts, per-resource histograms, and planned vs. actual **S-curves**. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
 
 ## Basic usage
 ```python
@@ -24,6 +24,7 @@ activities = [
         short_description="Stakeholder interviews",
         long_description="Interviews and onsite assessment",
         duration=5,
+        weight=1.5,
         resources={"survey_specialists": 2},
     ),
     wf.Activity(
@@ -33,14 +34,20 @@ activities = [
         short_description="Diagrams",
         long_description="Solution and integration diagrams",
         duration=3,
+        weight=2.0,
         resources={"civil_engineers": 1},
         delay=1.5,
         predecessors=["A1"],
+        progress_percent=50,
+        progress_as_of=datetime(2025, 1, 8),
     ),
 ]
 
 schedule.add_activities(activities)
 schedule.update_schedule(plot=True, plot_resources=True)
+
+# Optional: plot planned vs. actual S-curve using weights and reported progress
+schedule.plot_s_curve(title="Progress S-curve")
 
 for activity in activities:
     print(
@@ -73,9 +80,16 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - `activities_on_date(date(2025, 1, 8))` returns activities touching that day.
 - `activities_in_period(date(2025, 1, 6), date(2025, 1, 10))` returns activities intersecting the interval.
 - `activities_as_list()` returns a deterministic list of activities (sorted by ID) so you can serialize or rebuild a schedule elsewhere with `add_activities`.
+- `s_curve_data()` returns planned and actual cumulative progress (weights and percents) ready for custom plotting; `plot_s_curve()` renders the chart directly.
+
+### Progress tracking and S-curves
+- Each activity accepts `weight` (positive float) to contribute to planned value.
+- Report progress with `progress_percent` (0–100) and `progress_as_of` (required if progress > 0).
+- `actual_finish` can only be set when `progress_percent` reaches 100%; if omitted, it defaults to `progress_as_of` when progress is 100%.
+- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates.
 
 ## Full example (5 activities using every function)
-The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, and query helpers.
+The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, S-curve progress tracking, and query helpers.
 
 ```python
 from datetime import datetime, date
@@ -87,7 +101,8 @@ schedule = wf.ProjectSchedule(
     resource_names=["civil_engineers", "electrical_engineers", "geotechnical_specialists"],
 )
 
-# 2) Create activities (five total) with dependencies, resources, and optional delays
+# 2) Create activities (five total) with dependencies, resources, optional delays,
+#    weights (for S-curve), and progress snapshots
 activities = [
     wf.Activity(
         name="Feasibility study",
@@ -96,7 +111,11 @@ activities = [
         short_description="Feasibility",
         long_description="Initial scope assessment",
         duration=2,
+        weight=1.0,
         resources={"civil_engineers": 1},
+        progress_percent=100,
+        progress_as_of=datetime(2025, 3, 4),
+        actual_finish=datetime(2025, 3, 4),
     ),
     wf.Activity(
         name="Detailed engineering",
@@ -105,8 +124,11 @@ activities = [
         short_description="Design",
         long_description="Technical detailing",
         duration=4,
+        weight=2.0,
         resources={"electrical_engineers": 1},
         predecessors=["A1"],
+        progress_percent=40,
+        progress_as_of=datetime(2025, 3, 7),
     ),
     wf.Activity(
         name="Site preparation",
@@ -115,6 +137,7 @@ activities = [
         short_description="Preparation",
         long_description="Site setup and logistics",
         duration=3,
+        weight=1.5,
         resources={"civil_engineers": 2, "geotechnical_specialists": 1},
         predecessors=["A1"],
     ),
@@ -125,6 +148,7 @@ activities = [
         short_description="Foundations",
         long_description="Foundation execution",
         duration=5,
+        weight=3.0,
         resources={"civil_engineers": 3, "geotechnical_specialists": 1},
         predecessors=["A3"],
         delay=1,  # intentional lag
@@ -136,6 +160,7 @@ activities = [
         short_description="Electrical",
         long_description="Power and cabling infrastructure",
         duration=4,
+        weight=2.5,
         resources={"electrical_engineers": 2},
         predecessors=["A2", "A4"],
     ),
@@ -152,20 +177,23 @@ gantt_fig, resource_fig = schedule.update_schedule(
     resource_title="Daily resource usage",
 )
 
-# 5) Queries: by name, ID, area, and date ranges
+# 5) Plot planned vs. actual S-curve (weights + reported progress)
+progress_fig, progress_ax = schedule.plot_s_curve(title="Planned vs. actual progress")
+
+# 6) Queries: by name, ID, area, and date ranges
 print(schedule.find_by_name("Foundation"))
 print(schedule.find_by_activity_id("A3"))
 print(schedule.find_by_area("Field"))
 print(schedule.activities_on_date(date(2025, 3, 6)))
 print(schedule.activities_in_period(date(2025, 3, 3), date(2025, 3, 10)))
 
-# 6) Filtered histograms (only geotechnical specialists, for example)
+# 7) Filtered histograms (only geotechnical specialists, for example)
 geotech_fig, geotech_axes = schedule.plot_resource_histogram(
     resources=["geotechnical_specialists"],
     title="Geotechnical specialists per day",
 )
 
-# 7) Reset everything and start over if needed
+# 8) Reset everything and start over if needed
 schedule.reset()
 ```
 
