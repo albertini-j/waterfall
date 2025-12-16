@@ -529,7 +529,13 @@ class ProjectSchedule(BaseModel):
         return curve
 
     def _build_actual_progress_curve(self, timeline: List[datetime]) -> List[Dict[str, object]]:
-        """Compute the cumulative actual weight/percent using reported progress."""
+        """Compute cumulative actual progress, capped at ``progress_as_of``.
+
+        The actual curve is a snapshot as of the schedule-level ``progress_as_of``
+        date. It contains two points: the earliest planned date (0%) and the
+        reported progress at ``progress_as_of``. No actual data is shown beyond
+        that cutoff.
+        """
 
         total_weight = self._total_weight()
         if total_weight <= 0:
@@ -540,22 +546,22 @@ class ProjectSchedule(BaseModel):
                 raise ScheduleError("progress_as_of on the schedule is required when progress is reported.")
             return []
 
+        start = min(timeline) if timeline else self.start_date
         cutoff = self.progress_as_of
-        timeline = [point for point in timeline if point <= cutoff]
-        if not timeline:
-            return []
+
+        actual_weight = sum(activity.weight * (activity.progress_percent / 100) for activity in self.activities.values())
+        actual_percent = (actual_weight / total_weight) * 100
+
+        points: List[datetime] = sorted({start, cutoff})
 
         curve: List[Dict[str, object]] = []
-        for current in timeline:
-            actual_weight = 0.0
-            for activity in self.activities.values():
-                actual_weight += activity.weight * (activity.progress_percent / 100)
-
-            actual_percent = (actual_weight / total_weight) * 100
+        for point in points:
+            percent = 0.0 if point < cutoff else actual_percent
+            weight_value = 0.0 if point < cutoff else actual_weight
             curve.append({
-                "date": current,
-                "actual_weight": actual_weight,
-                "actual_percent": actual_percent,
+                "date": point,
+                "actual_weight": weight_value,
+                "actual_percent": percent,
             })
 
         return curve

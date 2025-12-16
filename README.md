@@ -86,7 +86,7 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - Each activity accepts `weight` (positive float) to contribute to planned value.
 - Report progress with `progress_percent` (0–100) and set a **schedule-level** `progress_as_of` date when any progress is reported.
 - `actual_finish` can only be set when `progress_percent` reaches 100%.
-- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line stops at `progress_as_of`.
+- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line stops at `progress_as_of` and only reflects the snapshot at that date (0% at start, reported % at `progress_as_of`).
 
 ## Full example (5 activities using every function)
 The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, S-curve progress tracking, and query helpers.
