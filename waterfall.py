@@ -32,8 +32,8 @@ class Activity(BaseModel):
     area, descriptions, dependencies, and resource allocation through
     the ``resources`` dictionary (for example ``{"civil_engineers": 2}``).
     The ``weight`` attribute contributes to S-curve calculations. Use
-    ``progress_percent`` along with ``progress_as_of`` to track earned
-    progress; once it reaches 100%, you may also record ``actual_finish``.
+    ``progress_percent`` to track earned progress; once it reaches 100%,
+    you may also record ``actual_finish``.
     The ``delay`` field lets you intentionally postpone the start without
     blocking scheduling.
     """
@@ -48,7 +48,6 @@ class Activity(BaseModel):
     duration: float
     weight: float = 1.0
     progress_percent: float = 0.0
-    progress_as_of: Optional[datetime] = None
     actual_finish: Optional[datetime] = None
     resources: Dict[str, float] = Field(default_factory=dict)
     delay: float = 0.0
@@ -87,22 +86,13 @@ class Activity(BaseModel):
 
     @model_validator(mode="after")
     def validate_progress_dates(self) -> "Activity":
-        """Normalize progress dates and enforce consistency rules."""
-
-        if self.progress_percent > 0 and self.progress_as_of is None:
-            raise ValueError("progress_as_of is required when progress_percent is positive.")
-
-        if self.progress_as_of is not None:
-            self.progress_as_of = self.progress_as_of.replace(hour=0, minute=0, second=0, microsecond=0)
+        """Normalize progress completion dates and enforce consistency rules."""
 
         if self.actual_finish is not None and self.progress_percent < 100:
             raise ValueError("actual_finish can only be set when progress_percent is 100%.")
 
         if self.actual_finish is not None:
             self.actual_finish = self.actual_finish.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        if self.progress_percent >= 100 and self.actual_finish is None and self.progress_as_of is not None:
-            self.actual_finish = self.progress_as_of
 
         return self
 
@@ -157,7 +147,9 @@ class ProjectSchedule(BaseModel):
 
     Besides scheduling (early/late dates, total float, critical path) it
     generates Gantt charts, resource histograms, and planned vs. actual
-    S-curves based on activity weights and reported progress.
+    S-curves based on activity weights and reported progress. The schedule
+    keeps a single ``progress_as_of`` date that applies to all activities
+    when building the actual S-curve.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -167,6 +159,7 @@ class ProjectSchedule(BaseModel):
     resource_names: List[str] = Field(default_factory=list)
     activities: Dict[str, Activity] = Field(default_factory=dict)
     resource_histogram: List[Dict[str, object]] = Field(default_factory=list)
+    progress_as_of: Optional[datetime] = None
 
     @field_validator("start_date")
     @classmethod
@@ -184,6 +177,15 @@ class ProjectSchedule(BaseModel):
                 raise ValueError("resource_count must be at least 1")
             self.resource_names = [f"resource{i+1}" for i in range(self.resource_count)]
         return self
+
+    @field_validator("progress_as_of")
+    @classmethod
+    def normalize_progress_as_of(cls, value: Optional[datetime]) -> Optional[datetime]:
+        """Normalize the progress reference date to midnight when present."""
+
+        if value is None:
+            return None
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _total_weight(self) -> float:
         """Return the sum of all activity weights, defaulting to 0.0 when empty."""
@@ -482,10 +484,9 @@ class ProjectSchedule(BaseModel):
         start = min(activity.start or self.start_date for activity in self.activities.values())
         end = max(activity.finish or self.start_date for activity in self.activities.values())
 
-        progress_dates = [a.progress_as_of for a in self.activities.values() if a.progress_as_of is not None]
-        if progress_dates:
-            start = min(start, min(progress_dates))
-            end = max(end, max(progress_dates))
+        if self.progress_as_of is not None:
+            start = min(start, self.progress_as_of)
+            end = max(end, self.progress_as_of)
 
         days = (end.date() - start.date()).days
         return [datetime.combine(start.date(), time.min) + timedelta(days=offset) for offset in range(days + 1)]
@@ -534,16 +535,21 @@ class ProjectSchedule(BaseModel):
         if total_weight <= 0:
             raise ScheduleError("At least one activity with positive weight is required for S-curves.")
 
-        reported_dates = [a.progress_as_of for a in self.activities.values() if a.progress_as_of is not None]
-        if not reported_dates:
+        if self.progress_as_of is None:
+            if any(a.progress_percent > 0 for a in self.activities.values()):
+                raise ScheduleError("progress_as_of on the schedule is required when progress is reported.")
+            return []
+
+        cutoff = self.progress_as_of
+        timeline = [point for point in timeline if point <= cutoff]
+        if not timeline:
             return []
 
         curve: List[Dict[str, object]] = []
         for current in timeline:
             actual_weight = 0.0
             for activity in self.activities.values():
-                if activity.progress_as_of is not None and activity.progress_as_of <= current:
-                    actual_weight += activity.weight * (activity.progress_percent / 100)
+                actual_weight += activity.weight * (activity.progress_percent / 100)
 
             actual_percent = (actual_weight / total_weight) * 100
             curve.append({
@@ -555,7 +561,12 @@ class ProjectSchedule(BaseModel):
         return curve
 
     def s_curve_data(self) -> Dict[str, List[Dict[str, object]]]:
-        """Return planned and actual curves for progress comparisons."""
+        """Return planned and actual curves for progress comparisons.
+
+        The actual curve is computed only up to ``progress_as_of`` on the
+        schedule. When progress has been reported (any ``progress_percent``
+        greater than zero), ``progress_as_of`` must be provided.
+        """
 
         planned_curve = self._build_planned_progress_curve()
         timeline = [entry["date"] for entry in planned_curve]
@@ -563,7 +574,12 @@ class ProjectSchedule(BaseModel):
         return {"planned": planned_curve, "actual": actual_curve}
 
     def plot_s_curve(self, *, title: str = "S-Curve (Planned vs Actual)") -> Tuple[Figure, Axes]:
-        """Plot the planned and actual S-curve using cumulative percent complete."""
+        """Plot the planned and actual S-curve using cumulative percent complete.
+
+        The actual line is drawn only through the ``progress_as_of`` date of
+        the schedule. When no progress is reported, the planned curve is still
+        produced and the plot notes that actual data is absent.
+        """
 
         curves = self.s_curve_data()
         planned = curves["planned"]

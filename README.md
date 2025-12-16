@@ -3,8 +3,8 @@
 This repository ships a **single module file (`waterfall.py`)**. Copy it into your project folder and import it directly (`import waterfall as wf`) without installing a package. External dependencies: `matplotlib` (for plotting) and `pydantic` (for typed validation). Install them manually with `pip install matplotlib pydantic` or `uv pip install matplotlib pydantic`.
 
 Main entities:
-- `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, optional delay, **weight**, and **progress tracking** fields (`progress_percent`, `progress_as_of`, `actual_finish`).
-- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts, per-resource histograms, and planned vs. actual **S-curves**. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
+- `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, optional delay, **weight**, and **progress tracking** fields (`progress_percent`, `actual_finish`).
+- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts, per-resource histograms, and planned vs. actual **S-curves**. It holds a single `progress_as_of` date that applies to all activities when drawing the actual curve. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
 
 ## Basic usage
 ```python
@@ -14,6 +14,7 @@ import waterfall as wf
 schedule = wf.ProjectSchedule(
     start_date=datetime(2025, 1, 6),
     resource_names=["civil_engineers", "electrical_engineers", "survey_specialists"],
+    progress_as_of=datetime(2025, 1, 8),
 )
 
 activities = [
@@ -39,7 +40,6 @@ activities = [
         delay=1.5,
         predecessors=["A1"],
         progress_percent=50,
-        progress_as_of=datetime(2025, 1, 8),
     ),
 ]
 
@@ -84,9 +84,9 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 
 ### Progress tracking and S-curves
 - Each activity accepts `weight` (positive float) to contribute to planned value.
-- Report progress with `progress_percent` (0–100) and `progress_as_of` (required if progress > 0).
-- `actual_finish` can only be set when `progress_percent` reaches 100%; if omitted, it defaults to `progress_as_of` when progress is 100%.
-- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates.
+- Report progress with `progress_percent` (0–100) and set a **schedule-level** `progress_as_of` date when any progress is reported.
+- `actual_finish` can only be set when `progress_percent` reaches 100%.
+- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line stops at `progress_as_of`.
 
 ## Full example (5 activities using every function)
 The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, S-curve progress tracking, and query helpers.
@@ -99,6 +99,7 @@ import waterfall as wf
 schedule = wf.ProjectSchedule(
     start_date=datetime(2025, 3, 3),
     resource_names=["civil_engineers", "electrical_engineers", "geotechnical_specialists"],
+    progress_as_of=datetime(2025, 3, 7),
 )
 
 # 2) Create activities (five total) with dependencies, resources, optional delays,
@@ -114,7 +115,6 @@ activities = [
         weight=1.0,
         resources={"civil_engineers": 1},
         progress_percent=100,
-        progress_as_of=datetime(2025, 3, 4),
         actual_finish=datetime(2025, 3, 4),
     ),
     wf.Activity(
@@ -128,7 +128,6 @@ activities = [
         resources={"electrical_engineers": 1},
         predecessors=["A1"],
         progress_percent=40,
-        progress_as_of=datetime(2025, 3, 7),
     ),
     wf.Activity(
         name="Site preparation",
