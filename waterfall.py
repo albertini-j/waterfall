@@ -14,10 +14,16 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+import json
+from pathlib import Path
 
 __all__ = [
     "Activity",
     "ProjectSchedule",
+    "ImportConfig",
+    "import_schedule_from_excel",
+    "load_import_config",
+    "save_import_config",
     "ScheduleError",
     "DuplicateActivityError",
     "CycleError",
@@ -134,6 +140,41 @@ class CycleError(ScheduleError):
 
 class UnknownPredecessorError(ScheduleError):
     """Raised when a declared predecessor is missing."""
+
+
+class ImportConfig(BaseModel):
+    """Column mapping used to load a schedule from spreadsheets."""
+
+    name: str
+    sheet_name: Optional[str] = None
+    activity_id_column: str
+    name_column: str
+    area_column: str
+    duration_column: str
+    weight_column: Optional[str] = None
+    progress_column: Optional[str] = None
+    predecessors_column: Optional[str] = None
+    resource_columns: Dict[str, str] = Field(default_factory=dict)
+    short_description_column: Optional[str] = None
+    long_description_column: Optional[str] = None
+
+    @model_validator(mode="after")
+    def ensure_required_columns(self) -> "ImportConfig":
+        """Verify mandatory columns for ID, name, area, and duration exist."""
+
+        missing = [
+            label
+            for label, value in {
+                "activity_id_column": self.activity_id_column,
+                "name_column": self.name_column,
+                "area_column": self.area_column,
+                "duration_column": self.duration_column,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise ValueError(f"Missing required column mappings: {', '.join(missing)}")
+        return self
 
 
 def _default_start_date() -> datetime:
@@ -616,8 +657,6 @@ class ProjectSchedule(BaseModel):
             raise ScheduleError("At least one activity with positive weight is required for S-curves.")
 
         if self.progress_as_of is None:
-            if any(a.progress_percent > 0 for a in self.activities.values()):
-                raise ScheduleError("progress_as_of on the schedule is required when progress is reported.")
             return []
 
         start = min(timeline) if timeline else self.start_date
@@ -645,7 +684,7 @@ class ProjectSchedule(BaseModel):
 
         The actual curve is computed only up to ``progress_as_of`` on the
         schedule. When progress has been reported (any ``progress_percent``
-        greater than zero), ``progress_as_of`` must be provided.
+        greater than zero), ``progress_as_of`` keeps the snapshot date.
         """
 
         planned_curve = self._build_planned_progress_curve()
@@ -737,3 +776,116 @@ class ProjectSchedule(BaseModel):
         for activity in self.activities.values():
             activity.clear_schedule()
         self.activities.clear()
+
+
+def save_import_config(config: ImportConfig, path: str | Path) -> None:
+    """Persist an ``ImportConfig`` to disk as JSON for reuse."""
+
+    target = Path(path)
+    target.write_text(json.dumps(config.model_dump(), indent=2, default=str), encoding="utf-8")
+
+
+def load_import_config(path: str | Path) -> ImportConfig:
+    """Load a previously saved ``ImportConfig`` from JSON."""
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return ImportConfig(**data)
+
+
+def import_schedule_from_excel(
+    excel_path: str | Path,
+    config: ImportConfig,
+    *,
+    start_date: Optional[datetime] = None,
+    progress_as_of: Optional[datetime] = None,
+    workweek: Optional[Set[int]] = None,
+    holidays: Optional[Set[date]] = None,
+    extra_workdays: Optional[Set[date]] = None,
+) -> ProjectSchedule:
+    """Create a ``ProjectSchedule`` from an Excel file using a column mapping.
+
+    The Excel sheet is read as values (formulas ignored) via ``pandas.read_excel``.
+    ``ImportConfig`` describes which columns supply activity attributes. Use
+    ``save_import_config`` and ``load_import_config`` to persist mappings for
+    future imports.
+    """
+
+    try:
+        import pandas as pd  # type: ignore
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise ScheduleError("pandas is required to import schedules from Excel.") from exc
+
+    sheet = config.sheet_name or 0
+    df = pd.read_excel(excel_path, sheet_name=sheet, engine="openpyxl")
+
+    schedule = ProjectSchedule(
+        start_date=start_date or _default_start_date(),
+        resource_names=list(config.resource_columns.keys()) or None,
+        progress_as_of=progress_as_of,
+        workweek=workweek or {0, 1, 2, 3, 4},
+        holidays=holidays or set(),
+        extra_workdays=extra_workdays or set(),
+    )
+
+    def _get(row: Dict[str, object], column: Optional[str]) -> Optional[object]:
+        if not column:
+            return None
+        return row.get(column)
+
+    for _, row in df.iterrows():
+        values = row.to_dict()
+        activity_id = str(_get(values, config.activity_id_column) or "").strip()
+        if not activity_id:
+            continue
+
+        name = str(_get(values, config.name_column) or "").strip()
+        area = str(_get(values, config.area_column) or "").strip()
+        duration_raw = _get(values, config.duration_column)
+        duration = float(duration_raw) if duration_raw is not None and str(duration_raw).strip() != "" else 0.0
+
+        weight_raw = _get(values, config.weight_column)
+        weight = float(weight_raw) if weight_raw is not None and str(weight_raw).strip() != "" else 1.0
+
+        progress_raw = _get(values, config.progress_column)
+        progress_percent = (
+            float(progress_raw)
+            if progress_raw is not None and str(progress_raw).strip() != ""
+            else 0.0
+        )
+
+        predecessors_cell = _get(values, config.predecessors_column)
+        predecessors: List[str] = []
+        if predecessors_cell:
+            for token in str(predecessors_cell).replace(";", ",").split(","):
+                cleaned = token.strip()
+                if cleaned:
+                    predecessors.append(cleaned)
+
+        resources: Dict[str, float] = {}
+        for resource_name, column in config.resource_columns.items():
+            res_value = _get(values, column)
+            resources[resource_name] = (
+                float(res_value)
+                if res_value is not None and str(res_value).strip() != ""
+                else 0.0
+            )
+
+        short_desc_raw = _get(values, config.short_description_column)
+        long_desc_raw = _get(values, config.long_description_column)
+
+        activity = Activity(
+            name=name or activity_id,
+            activity_id=activity_id,
+            area=area or "General",
+            short_description=str(short_desc_raw).strip() if short_desc_raw is not None else name or activity_id,
+            long_description=str(long_desc_raw).strip() if long_desc_raw is not None else name or activity_id,
+            duration=duration,
+            weight=weight,
+            progress_percent=progress_percent,
+            resources=resources,
+            predecessors=predecessors,
+        )
+
+        schedule.add_activity(activity)
+
+    return schedule

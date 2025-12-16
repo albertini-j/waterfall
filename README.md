@@ -95,6 +95,45 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - Set `holidays={date(...)}` to exclude specific working days and `extra_workdays={date(...)}` to convert normally non-working days into workdays.
 - Durations, delays, early/late dates, critical path, and resource histograms all honor the configured calendar (non-working days are skipped).
 
+### Excel import example (mapping saved for reuse)
+```python
+from datetime import datetime
+import waterfall as wf
+
+# 1) Define the column mapping for the spreadsheet
+config = wf.ImportConfig(
+    name="LD mapping",
+    sheet_name="LD",
+    activity_id_column="Número",
+    name_column="Título",
+    area_column="disciplina",
+    duration_column="duração",
+    weight_column="peso",
+    progress_column="avanço",
+    predecessors_column="Predecessoras",
+    resource_columns={
+        "Engenheiro-1": "Engenheiro-1",
+        "Engenheiro-2": "Engenheiro-2",
+        "Engenheiro-3": "Engenheiro-3",
+    },
+)
+
+# (optional) Save mapping for future imports
+wf.save_import_config(config, "ld_mapping.json")
+
+# 2) Import the schedule from the Excel file
+schedule = wf.import_schedule_from_excel(
+    "LD_R0.xlsx",
+    config,
+    start_date=datetime(2025, 1, 6),
+    progress_as_of=datetime(2025, 1, 8),
+)
+
+# 3) Calculate and plot
+schedule.update_schedule(plot=True, plot_resources=True)
+schedule.plot_s_curve(title="Planned vs actual (LD)")
+```
+
 ## Full example (5 activities using every function)
 The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, S-curve progress tracking, and query helpers.
 
