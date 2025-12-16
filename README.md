@@ -104,12 +104,12 @@ import waterfall as wf
 config = wf.ImportConfig(
     name="LD mapping",
     sheet_name="LD",
-    activity_id_column="Número",
-    name_column="Título",
-    area_column="disciplina",
-    duration_column="duração",
-    weight_column="peso",
-    progress_column="avanço",
+    activity_id_column="NÚMERO",
+    name_column="TÍTULO",
+    area_column="DISCIPLINA",
+    duration_column="Duração",
+    weight_column="Peso",
+    progress_column="Avanço",
     predecessors_column="Predecessoras",
     resource_columns={
         "Engenheiro-1": "Engenheiro-1",
@@ -123,6 +123,7 @@ wf.save_import_config(config, "ld_mapping.json")
 
 # 2) Import activities from the Excel file
 activities = wf.import_schedule_from_excel("LD_R0.xlsx", config)
+print(f"Imported {len(activities)} activities; first ID: {activities[0].activity_id}")
 
 # 3) Build the schedule with calendar/progress context
 schedule = wf.ProjectSchedule(

@@ -77,10 +77,10 @@ class Activity(BaseModel):
     @field_validator("weight")
     @classmethod
     def validate_weight(cls, value: float) -> float:
-        """Ensure weight is positive so progress curves can be computed."""
+        """Ensure weight is not negative so progress curves can be computed."""
 
-        if value <= 0:
-            raise ValueError("weight must be greater than zero.")
+        if value < 0:
+            raise ValueError("weight must be zero or greater.")
         return value
 
     @model_validator(mode="after")
@@ -804,8 +804,9 @@ def import_schedule_from_excel(
     ``ImportConfig`` describes which columns supply activity attributes. Use
     ``save_import_config`` and ``load_import_config`` to persist mappings for
     future imports. The returned list can be passed to
-    ``ProjectSchedule.add_activities`` and paired with a schedule-level
-    ``progress_as_of`` when desired.
+    ``ProjectSchedule.add_activities``. The ``progress_as_of`` parameter is kept
+    only for backward compatibility; it is ignored because progress is schedule-
+    level state.
     """
 
     try:
@@ -815,6 +816,7 @@ def import_schedule_from_excel(
 
     sheet = config.sheet_name or 0
     df = pd.read_excel(excel_path, sheet_name=sheet, engine="openpyxl")
+    df = df.where(pd.notna(df), None)
 
     def _get(row: Dict[str, object], column: Optional[str]) -> Optional[object]:
         if not column:
