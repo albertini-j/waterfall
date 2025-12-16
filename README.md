@@ -4,7 +4,7 @@ This repository ships a **single module file (`waterfall.py`)**. Copy it into yo
 
 Main entities:
 - `Activity`: describes a task with duration, area, descriptions, named resources, predecessors, optional delay, **weight**, and **progress tracking** fields (`progress_percent`, `actual_finish`).
-- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts, per-resource histograms, and planned vs. actual **S-curves**. It holds a single `progress_as_of` date that applies to all activities when drawing the actual curve. It is a Pydantic `BaseModel`, so field validation and serialization are available by default.
+- `ProjectSchedule`: stores activities, computes start/finish dates from precedence, derives early/late start, total float, critical path, and produces Gantt charts, per-resource histograms, and planned vs. actual **S-curves**. It holds a single `progress_as_of` date that applies to all activities when drawing the actual curve. It is a Pydantic `BaseModel`, so field validation and serialization are available by default. You can configure a work calendar (default Monday–Friday), adding holidays and extra workdays.
 
 ## Basic usage
 ```python
@@ -15,6 +15,8 @@ schedule = wf.ProjectSchedule(
     start_date=datetime(2025, 1, 6),
     resource_names=["civil_engineers", "electrical_engineers", "survey_specialists"],
     progress_as_of=datetime(2025, 1, 8),
+    holidays={date(2025, 1, 7)},  # optional: non-working specific dates
+    extra_workdays={date(2025, 1, 11)},  # optional: turn a weekend into workday
 )
 
 activities = [
@@ -87,6 +89,11 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - Report progress with `progress_percent` (0–100) and set a **schedule-level** `progress_as_of` date when any progress is reported.
 - `actual_finish` can only be set when `progress_percent` reaches 100%.
 - Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line stops at `progress_as_of` and only reflects the snapshot at that date (0% at start, reported % at `progress_as_of`).
+
+### Calendars and workdays
+- Default workweek is Monday–Friday (`workweek={0,1,2,3,4}`), where 0 = Monday.
+- Set `holidays={date(...)}` to exclude specific working days and `extra_workdays={date(...)}` to convert normally non-working days into workdays.
+- Durations, delays, early/late dates, critical path, and resource histograms all honor the configured calendar (non-working days are skipped).
 
 ## Full example (5 activities using every function)
 The example below shows the full workflow with five activities, including scheduling, plotting, resource histogram filtering, S-curve progress tracking, and query helpers.

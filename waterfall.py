@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from datetime import date, datetime, time, timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 import warnings
 
 import matplotlib.pyplot as plt
@@ -160,6 +160,9 @@ class ProjectSchedule(BaseModel):
     activities: Dict[str, Activity] = Field(default_factory=dict)
     resource_histogram: List[Dict[str, object]] = Field(default_factory=list)
     progress_as_of: Optional[datetime] = None
+    workweek: Set[int] = Field(default_factory=lambda: {0, 1, 2, 3, 4})
+    holidays: Set[date] = Field(default_factory=set)
+    extra_workdays: Set[date] = Field(default_factory=set)
 
     @field_validator("start_date")
     @classmethod
@@ -187,6 +190,16 @@ class ProjectSchedule(BaseModel):
             return None
         return value.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    @field_validator("workweek")
+    @classmethod
+    def validate_workweek(cls, value: Set[int]) -> Set[int]:
+        """Ensure workweek uses weekday numbers in the 0-6 range."""
+
+        invalid = [day for day in value if day < 0 or day > 6]
+        if invalid:
+            raise ValueError("workweek entries must be between 0 (Monday) and 6 (Sunday).")
+        return value
+
     def _total_weight(self) -> float:
         """Return the sum of all activity weights, defaulting to 0.0 when empty."""
 
@@ -197,6 +210,63 @@ class ProjectSchedule(BaseModel):
 
         if any(activity.start is None or activity.finish is None for activity in self.activities.values()):
             raise ScheduleError("Run update_schedule before using this operation.")
+
+    def is_workday(self, day: date) -> bool:
+        """Return True when the provided date is a working day."""
+
+        if day in self.holidays:
+            return False
+        if day in self.extra_workdays:
+            return True
+        return day.weekday() in self.workweek
+
+    def _align_to_workday(self, moment: datetime) -> datetime:
+        """Move forward to the next workday at midnight if currently non-working."""
+
+        current = moment
+        while not self.is_workday(current.date()):
+            current = datetime.combine(current.date() + timedelta(days=1), time.min)
+        return current
+
+    def _add_workdays(self, start: datetime, workdays: float) -> datetime:
+        """Advance by workdays, skipping non-working dates while preserving fractions."""
+
+        current = self._align_to_workday(start)
+        remaining = workdays
+
+        while remaining > 0:
+            if not self.is_workday(current.date()):
+                current = datetime.combine(current.date() + timedelta(days=1), time.min)
+                continue
+
+            if remaining >= 1:
+                current += timedelta(days=1)
+                remaining -= 1
+            else:
+                current += timedelta(days=remaining)
+                remaining = 0
+        return current
+
+    def _subtract_workdays(self, finish: datetime, workdays: float) -> datetime:
+        """Move backward by workdays, skipping non-working dates while preserving fractions."""
+
+        current = finish
+        remaining = workdays
+
+        # If finish lands on a non-workday, move backward to the prior workday start
+        while not self.is_workday(current.date()):
+            current = datetime.combine(current.date() - timedelta(days=1), time.min)
+
+        while remaining > 0:
+            if remaining >= 1:
+                current -= timedelta(days=1)
+                remaining -= 1
+                while not self.is_workday(current.date()):
+                    current = datetime.combine(current.date() - timedelta(days=1), time.min)
+            else:
+                current -= timedelta(days=remaining)
+                remaining = 0
+        return current
 
     def add_activity(self, activity: Activity) -> None:
         """Add a single activity; fail when the ID already exists."""
@@ -297,7 +367,7 @@ class ProjectSchedule(BaseModel):
             else:
                 start = self.start_date
 
-            start_with_delay = start + timedelta(days=activity.delay)
+            start_with_delay = self._add_workdays(start, activity.delay)
             activity.set_schedule(start_with_delay)
 
         project_finish = max(activity.finish for activity in self.activities.values()) if self.activities else self.start_date
@@ -311,7 +381,7 @@ class ProjectSchedule(BaseModel):
             else:
                 late_finish = project_finish
 
-            activity.late_start = late_finish - timedelta(days=activity.duration)
+            activity.late_start = self._subtract_workdays(late_finish, activity.duration)
             if activity.early_start is None:
                 raise ScheduleError("early_start was not calculated for the activity.")
 
@@ -404,6 +474,10 @@ class ProjectSchedule(BaseModel):
 
             current = activity.start
             while current < activity.finish:
+                if not self.is_workday(current.date()):
+                    current = datetime.combine(current.date() + timedelta(days=1), time.min)
+                    continue
+
                 end_of_day = datetime.combine(current.date(), time.min) + timedelta(days=1)
                 slice_finish = min(end_of_day, activity.finish)
                 portion_days = (slice_finish - current).total_seconds() / 86400
