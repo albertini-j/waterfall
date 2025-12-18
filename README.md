@@ -86,9 +86,11 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 
 ### Progress tracking and S-curves
 - Each activity accepts `weight` (positive float) to contribute to planned value.
+- Provide an optional `scheduled_date` to represent the planned completion date; the planned S-curve steps on this date (or on
+  the calculated finish when no scheduled date is supplied).
 - Report progress with `progress_percent` (0–100) and set a **schedule-level** `progress_as_of` date when any progress is reported.
 - `actual_finish` can only be set when `progress_percent` reaches 100%.
-- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line stops at `progress_as_of` and only reflects the snapshot at that date (0% at start, reported % at `progress_as_of`).
+- Call `plot_s_curve()` to visualize planned vs. actual progress using the weights and reported dates. The actual line steps forward only on completion dates (`actual_finish`) and is capped at `progress_as_of` (no projection beyond the progress snapshot).
 
 ### Calendars and workdays
 - Default workweek is Monday–Friday (`workweek={0,1,2,3,4}`), where 0 = Monday.
@@ -96,6 +98,7 @@ fig, axes = schedule.plot_resource_histogram(resources=["electrical_engineers"],
 - Durations, delays, early/late dates, critical path, and resource histograms all honor the configured calendar (non-working days are skipped).
 
 ### Excel import example (mapping saved for reuse)
+Map columns for IDs, titles, areas, durations, and any optional data you need (weights, progress, actual finish dates, predecessors, and named resources). The importer reads cell values only (no formulas) and returns a list of `Activity` instances ready for `add_activities`.
 ```python
 from datetime import datetime
 import waterfall as wf
@@ -110,6 +113,8 @@ config = wf.ImportConfig(
     duration_column="Duração",
     weight_column="Peso",
     progress_column="Avanço",
+    actual_finish_column="DATA DE EMISSÃO",
+    scheduled_date_column="DATA PREVISTA",
     predecessors_column="Predecessoras",
     resource_columns={
         "Engenheiro-1": "Engenheiro-1",
@@ -124,6 +129,7 @@ wf.save_import_config(config, "ld_mapping.json")
 # 2) Import activities from the Excel file
 activities = wf.import_schedule_from_excel("LD_R0.xlsx", config)
 print(f"Imported {len(activities)} activities; first ID: {activities[0].activity_id}")
+# The importer will also pick up scheduled dates from "DATA PREVISTA" and actual finishes from "DATA DE EMISSÃO".
 
 # 3) Build the schedule with calendar/progress context
 schedule = wf.ProjectSchedule(

@@ -55,6 +55,7 @@ class Activity(BaseModel):
     weight: float = 1.0
     progress_percent: float = 0.0
     actual_finish: Optional[datetime] = None
+    scheduled_date: Optional[datetime] = None
     resources: Dict[str, float] = Field(default_factory=dict)
     delay: float = 0.0
     predecessors: List[str] = Field(default_factory=list)
@@ -100,14 +101,17 @@ class Activity(BaseModel):
         if self.actual_finish is not None:
             self.actual_finish = self.actual_finish.replace(hour=0, minute=0, second=0, microsecond=0)
 
+        if self.scheduled_date is not None:
+            self.scheduled_date = self.scheduled_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
         return self
 
-    def set_schedule(self, start: datetime) -> None:
+    def set_schedule(self, start: datetime, finish: datetime) -> None:
         """Define start/finish and early start for internal scheduling."""
 
         self.start = start
         self.early_start = start
-        self.finish = start + timedelta(days=self.duration)
+        self.finish = finish
 
     def depends_on(self, candidates: Iterable[str]) -> bool:
         """Return True when the activity depends on any provided IDs."""
@@ -153,6 +157,8 @@ class ImportConfig(BaseModel):
     duration_column: str
     weight_column: Optional[str] = None
     progress_column: Optional[str] = None
+    actual_finish_column: Optional[str] = None
+    scheduled_date_column: Optional[str] = None
     predecessors_column: Optional[str] = None
     resource_columns: Dict[str, str] = Field(default_factory=dict)
     short_description_column: Optional[str] = None
@@ -262,11 +268,19 @@ class ProjectSchedule(BaseModel):
         return day.weekday() in self.workweek
 
     def _align_to_workday(self, moment: datetime) -> datetime:
-        """Move forward to the next workday at midnight if currently non-working."""
+        """Move forward to the next workday while preserving the time of day."""
 
         current = moment
         while not self.is_workday(current.date()):
-            current = datetime.combine(current.date() + timedelta(days=1), time.min)
+            current = datetime.combine(current.date() + timedelta(days=1), current.time())
+        return current
+
+    def _align_to_prev_workday(self, moment: datetime) -> datetime:
+        """Move backward to the most recent workday while preserving the time of day."""
+
+        current = moment
+        while not self.is_workday(current.date()):
+            current = datetime.combine(current.date() - timedelta(days=1), current.time())
         return current
 
     def _add_workdays(self, start: datetime, workdays: float) -> datetime:
@@ -277,36 +291,40 @@ class ProjectSchedule(BaseModel):
 
         while remaining > 0:
             if not self.is_workday(current.date()):
-                current = datetime.combine(current.date() + timedelta(days=1), time.min)
+                current = datetime.combine(current.date() + timedelta(days=1), current.time())
                 continue
 
-            if remaining >= 1:
-                current += timedelta(days=1)
-                remaining -= 1
-            else:
-                current += timedelta(days=remaining)
-                remaining = 0
+            step = min(remaining, 1.0)
+            current += timedelta(days=step)
+            remaining -= step
+
+            while not self.is_workday(current.date()) and remaining > 0:
+                current = datetime.combine(current.date() + timedelta(days=1), current.time())
+
+        if not self.is_workday(current.date()):
+            current = self._align_to_workday(current)
         return current
 
     def _subtract_workdays(self, finish: datetime, workdays: float) -> datetime:
         """Move backward by workdays, skipping non-working dates while preserving fractions."""
 
-        current = finish
+        current = self._align_to_prev_workday(finish)
         remaining = workdays
 
-        # If finish lands on a non-workday, move backward to the prior workday start
-        while not self.is_workday(current.date()):
-            current = datetime.combine(current.date() - timedelta(days=1), time.min)
-
         while remaining > 0:
-            if remaining >= 1:
-                current -= timedelta(days=1)
-                remaining -= 1
-                while not self.is_workday(current.date()):
-                    current = datetime.combine(current.date() - timedelta(days=1), time.min)
-            else:
-                current -= timedelta(days=remaining)
-                remaining = 0
+            if not self.is_workday(current.date()):
+                current = datetime.combine(current.date() - timedelta(days=1), current.time())
+                continue
+
+            step = min(remaining, 1.0)
+            current -= timedelta(days=step)
+            remaining -= step
+
+            while not self.is_workday(current.date()) and remaining > 0:
+                current = datetime.combine(current.date() - timedelta(days=1), current.time())
+
+        if not self.is_workday(current.date()):
+            current = self._align_to_prev_workday(current)
         return current
 
     def add_activity(self, activity: Activity) -> None:
@@ -409,7 +427,17 @@ class ProjectSchedule(BaseModel):
                 start = self.start_date
 
             start_with_delay = self._add_workdays(start, activity.delay)
-            activity.set_schedule(start_with_delay)
+            finish = self._add_workdays(start_with_delay, activity.duration)
+            activity.set_schedule(start_with_delay, finish)
+
+            if activity.scheduled_date is not None and activity.scheduled_date < finish:
+                warnings.warn(
+                    (
+                        f"Activity {activity.activity_id} scheduled_date ({activity.scheduled_date.date()}) "
+                        f"is earlier than calculated finish ({finish.date()}); review duration or predecessors."
+                    ),
+                    RuntimeWarning,
+                )
 
         project_finish = max(activity.finish for activity in self.activities.values()) if self.activities else self.start_date
 
@@ -596,8 +624,22 @@ class ProjectSchedule(BaseModel):
 
         self._ensure_schedule_ready()
 
-        start = min(activity.start or self.start_date for activity in self.activities.values())
-        end = max(activity.finish or self.start_date for activity in self.activities.values())
+        start_candidates: List[datetime] = [self.start_date]
+        end_candidates: List[datetime] = [self.start_date]
+
+        for activity in self.activities.values():
+            if activity.start is not None:
+                start_candidates.append(activity.start)
+            if activity.finish is not None:
+                end_candidates.append(activity.finish)
+            if activity.scheduled_date is not None:
+                start_candidates.append(activity.scheduled_date)
+                end_candidates.append(activity.scheduled_date)
+            if activity.actual_finish is not None:
+                end_candidates.append(activity.actual_finish)
+
+        start = min(start_candidates)
+        end = max(end_candidates)
 
         if self.progress_as_of is not None:
             start = min(start, self.progress_as_of)
@@ -621,16 +663,8 @@ class ProjectSchedule(BaseModel):
                 if activity.start is None or activity.finish is None:
                     raise ScheduleError("Run update_schedule before generating S-curves.")
 
-                duration_seconds = (activity.finish - activity.start).total_seconds()
-                if duration_seconds <= 0:
-                    fraction = 1.0 if current >= activity.finish else 0.0
-                elif current <= activity.start:
-                    fraction = 0.0
-                elif current >= activity.finish:
-                    fraction = 1.0
-                else:
-                    elapsed_seconds = (current - activity.start).total_seconds()
-                    fraction = elapsed_seconds / duration_seconds
+                planned_completion = activity.scheduled_date or activity.finish
+                fraction = 1.0 if current >= planned_completion else 0.0
 
                 planned_weight += activity.weight * fraction
 
@@ -644,12 +678,10 @@ class ProjectSchedule(BaseModel):
         return curve
 
     def _build_actual_progress_curve(self, timeline: List[datetime]) -> List[Dict[str, object]]:
-        """Compute cumulative actual progress, capped at ``progress_as_of``.
+        """Compute cumulative actual progress as a step curve up to ``progress_as_of``.
 
-        The actual curve is a snapshot as of the schedule-level ``progress_as_of``
-        date. It contains two points: the earliest planned date (0%) and the
-        reported progress at ``progress_as_of``. No actual data is shown beyond
-        that cutoff.
+        Actual progress only advances on completion dates (``actual_finish``) and
+        is never extrapolated beyond the schedule-level ``progress_as_of`` cutoff.
         """
 
         total_weight = self._total_weight()
@@ -659,22 +691,29 @@ class ProjectSchedule(BaseModel):
         if self.progress_as_of is None:
             return []
 
-        start = min(timeline) if timeline else self.start_date
         cutoff = self.progress_as_of
 
-        actual_weight = sum(activity.weight * (activity.progress_percent / 100) for activity in self.activities.values())
-        actual_percent = (actual_weight / total_weight) * 100
+        completions: Dict[datetime, float] = defaultdict(float)
+        for activity in self.activities.values():
+            if activity.actual_finish is None:
+                continue
+            if activity.actual_finish > cutoff:
+                continue
+            completions[activity.actual_finish] += activity.weight
 
-        points: List[datetime] = sorted({start, cutoff})
+        # Build a capped timeline up to the progress cutoff (inclusive)
+        capped_timeline = sorted({t for t in timeline if t <= cutoff} | {cutoff})
+        if not capped_timeline:
+            capped_timeline = [cutoff]
 
         curve: List[Dict[str, object]] = []
-        for point in points:
-            percent = 0.0 if point < cutoff else actual_percent
-            weight_value = 0.0 if point < cutoff else actual_weight
+        cumulative_weight = 0.0
+        for point in capped_timeline:
+            cumulative_weight += completions.get(point, 0.0)
             curve.append({
                 "date": point,
-                "actual_weight": weight_value,
-                "actual_percent": percent,
+                "actual_weight": cumulative_weight,
+                "actual_percent": (cumulative_weight / total_weight) * 100,
             })
 
         return curve
@@ -683,8 +722,9 @@ class ProjectSchedule(BaseModel):
         """Return planned and actual curves for progress comparisons.
 
         The actual curve is computed only up to ``progress_as_of`` on the
-        schedule. When progress has been reported (any ``progress_percent``
-        greater than zero), ``progress_as_of`` keeps the snapshot date.
+        schedule and advances in steps at each ``actual_finish`` date. When
+        progress has been reported (any ``progress_percent`` greater than zero),
+        ``progress_as_of`` keeps the snapshot date.
         """
 
         planned_curve = self._build_planned_progress_curve()
@@ -801,7 +841,8 @@ def import_schedule_from_excel(
     """Load activities from Excel using a column mapping and return them.
 
     The Excel sheet is read as values (formulas ignored) via ``pandas.read_excel``.
-    ``ImportConfig`` describes which columns supply activity attributes. Use
+    ``ImportConfig`` describes which columns supply activity attributes, including
+    optional actual-finish dates (when provided, progress is forced to 100%). Use
     ``save_import_config`` and ``load_import_config`` to persist mappings for
     future imports. The returned list can be passed to
     ``ProjectSchedule.add_activities``. The ``progress_as_of`` parameter is kept
@@ -845,6 +886,28 @@ def import_schedule_from_excel(
             else 0.0
         )
 
+        scheduled_date_raw = _get(values, config.scheduled_date_column)
+        scheduled_date: Optional[datetime] = None
+        if scheduled_date_raw is not None:
+            parsed = pd.to_datetime(scheduled_date_raw, errors="coerce")
+            if not pd.isna(parsed):
+                as_datetime = (
+                    parsed.to_pydatetime() if hasattr(parsed, "to_pydatetime") else datetime.fromisoformat(str(parsed))
+                )
+                scheduled_date = as_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        actual_finish_raw = _get(values, config.actual_finish_column)
+        actual_finish: Optional[datetime] = None
+        if actual_finish_raw is not None:
+            parsed = pd.to_datetime(actual_finish_raw, errors="coerce")
+            if not pd.isna(parsed):
+                as_datetime = (
+                    parsed.to_pydatetime() if hasattr(parsed, "to_pydatetime") else datetime.fromisoformat(str(parsed))
+                )
+                actual_finish = as_datetime.replace(hour=0, minute=0, second=0, microsecond=0)
+                if progress_percent < 100:
+                    progress_percent = 100.0
+
         predecessors_cell = _get(values, config.predecessors_column)
         predecessors: List[str] = []
         if predecessors_cell:
@@ -874,6 +937,8 @@ def import_schedule_from_excel(
             duration=duration,
             weight=weight,
             progress_percent=progress_percent,
+            actual_finish=actual_finish,
+            scheduled_date=scheduled_date,
             resources=resources,
             predecessors=predecessors,
         )
